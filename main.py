@@ -1,39 +1,69 @@
-#Primex Core Bot - Version Final
+import logging from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile from telegram.ext import ( Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler, )
 
-#by primex | Verified by the developer primex
+==================== CONFIG ====================
 
-import os, json, base64, binascii, codecs
-import urllib.parse
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+BOT_TOKEN = "8263269951:AAEZ52DKTruGI6ujfHjq4gh9ZK0JDWinBks" ADMIN_ID = 7912879029 MANDATORY_CHANNELS = ["@imprimex"]  # <-- replace with your channels
 
-=== Constants ===
+Files DB (in-memory)
 
-TOKEN = "7967640262:AAFKCefly9fEBLVTUXm1BeOPQ1GPLKd_bkE" OWNER_ID = 7912879029 CHANNEL = "@vxwwo"
+files_db = {}
 
-=== Helpers ===
+States for Conversation
 
-def load_json(filename): if not os.path.exists(filename): return {} with open(filename, 'r') as f: return json.load(f)
+WAITING_FILE, WAITING_KEYWORD, CONFIRMATION = range(3)
 
-def save_json(filename, data): with open(filename, 'w') as f: json.dump(data, f, indent=4)
+logging.basicConfig(level=logging.INFO) logger = logging.getLogger(name)
 
-users = load_json("users.json") channels = load_json("channels.json")
+==================== START ====================
 
-=== CAPTCHA ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): user = update.effective_user keyboard = [[InlineKeyboardButton("Help", callback_data="help")]] markup = InlineKeyboardMarkup(keyboard) await update.message.reply_text( f"Welcome {user.first_name}.\n\nThis bot allows you to search files with a simple keyword.", reply_markup=markup, )
 
-def generate_captcha(): from random import randint return str(randint(1000, 9999))
+==================== ADD FILE (ADMIN) ====================
 
-=== UI Keyboards ===
+async def add_file_entry(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.effective_user.id != ADMIN_ID: return await update.message.reply_text("Access denied.") await update.message.reply_text("Send me the file you want to add.") return WAITING_FILE
 
-def main_menu(): return ReplyKeyboardMarkup([ ["Encrypt", "Decrypt"], ["Generate Code (AI)", "Scan & Fix Code"], ["Contact Developer"] ], resize_keyboard=True)
+async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE): file_id = update.message.document.file_id context.user_data["new_file"] = file_id await update.message.reply_text("Now send me the keyword for this file.") return WAITING_KEYWORD
 
-def admin_panel(): return InlineKeyboardMarkup([ [InlineKeyboardButton("Add Channel", callback_data="add_channel")], [InlineKeyboardButton("Remove Channel", callback_data="remove_channel")], [InlineKeyboardButton("Update Code", callback_data="update_code")], [InlineKeyboardButton("View Code", callback_data="view_code")] ])
+async def receive_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE): keyword = update.message.text.strip().lower() context.user_data["keyword"] = keyword await update.message.reply_text(f"Keyword: {keyword}\nConfirm? (yes/no)") return CONFIRMATION
 
-=== Sub Check ===
+async def confirm_entry(update: Update, context: ContextTypes.DEFAULT_TYPE): answer = update.message.text.strip().lower() if answer == "yes": keyword = context.user_data["keyword"] files_db[keyword] = context.user_data["new_file"] await update.message.reply_text("File successfully added.") else: await update.message.reply_text("Cancelled.") return ConversationHandler.END
 
-async def check_subscription(user_id, bot): try: for ch in channels.get("channels", [CHANNEL]): member = await bot.get_chat_member(ch, user_id) if member.status not in ['member', 'administrator', 'creator']: return False return True except: return False
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Process cancelled.") return ConversationHandler.END
 
-=== Core Logic ===
+==================== SEARCH ====================
+
+async def search_file(update: Update, context: ContextTypes.DEFAULT_TYPE): keyword = update.message.text.strip().lower() if keyword in files_db: await update.message.reply_document(files_db[keyword]) else: await update.message.reply_text("No file found for that keyword.")
+
+==================== ADMIN PANEL ====================
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE): if update.effective_user.id != ADMIN_ID: return await update.message.reply_text("Access denied.") keyboard = [ [InlineKeyboardButton("Add File", callback_data="add_file")], [InlineKeyboardButton("Manage Files", callback_data="manage")], [InlineKeyboardButton("Mandatory Channels", callback_data="channels")], ] await update.message.reply_text("Admin Panel:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() if query.data == "help": await query.edit_message_text("Just type a keyword and I’ll return the file if it exists.") elif query.data == "add_file": await query.edit_message_text("Use /add to upload a new file.") elif query.data == "manage": if not files_db: await query.edit_message_text("No files stored yet.") else: msg = "Stored files:\n" for k in files_db.keys(): msg += f"- {k}\n" await query.edit_message_text(msg) elif query.data == "channels": text = "Mandatory channels:\n" + "\n".join(MANDATORY_CHANNELS) await query.edit_message_text(text)
+
+==================== MAIN ====================
+
+def main(): app = Application.builder().token(BOT_TOKEN).build()
+
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("add", add_file_entry)],
+    states={
+        WAITING_FILE: [MessageHandler(filters.Document.ALL, receive_file)],
+        WAITING_KEYWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_keyword)],
+        CONFIRMATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_entry)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("admin", admin_panel))
+app.add_handler(conv_handler)
+app.add_handler(CallbackQueryHandler(callback_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_file))
+
+app.run_polling()
+
+if name == "main": main()
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): uid = str(update.effective_user.id) if not await check_subscription(uid, context.bot): await update.message.reply_text(f"You must join our channel first: {CHANNEL}") return cap = generate_captcha() users[uid] = {"captcha": cap} save_json("users.json", users) await update.message.reply_text(f"Enter this code to continue: {cap}")
 
